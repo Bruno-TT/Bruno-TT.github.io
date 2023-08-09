@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Line Graph View</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/pca-js@1.0.0/pca.min.js"></script>
+    <script src="lib.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <div id="tooltip" style="position: absolute; opacity: 0;"></div>
+
+    <div id="map-container" class="map"></div>
+
+
+    <script>
+        const width = 1500;
+        const height = 750;
+
+        let crimeData;
+        let colorScale;
+
+        const svg = d3.select("#map-container")
+            .append("svg")
+            .attr("width", width)
+            .attr("height", height)
+            .style("display", "block");
+
+        function createLegend(svg, colorScale, areaNames) {
+            const legend = svg.append("g")
+                .attr("class", "legend")
+                .attr("transform", "translate(" + (width - 195) + "," + (height - 40 * areaNames.length) + ")");
+
+            legend.selectAll("rect")
+                .data(areaNames)
+                .enter()
+                .append("rect")
+                .attr("x", 0)
+                .attr("y", (d, i) => i * 20)
+                .attr("width", 18)
+                .attr("height", 18)
+                .attr("fill", d => colorScale(d));
+
+            legend.selectAll("text")
+                .data(areaNames)
+                .enter()
+                .append("text")
+                .attr("x", 24)
+                .attr("y", (d, i) => i * 20 + 14)
+                .text(d => prettifyAreaName(d));
+        }
+
+        function plotAreaComparisonGraph(crime) {
+
+            d3.select("#choropleth-button").remove();
+            svg.selectAll("g").remove();
+
+            const button = d3.select("body")
+                .append("button")
+                .attr("id", "choropleth-button")
+                .text("Map View");
+
+            button.on("click",()=>{window.location.href=`choropleth.html?crime=${crime}`})
+
+            // position the button in the top left corner
+            button.style("position", "absolute")
+                .style("left", "10px")
+                .style("top", "10px");
+        
+
+            // initialize the color scale
+            colorScale = d3.scaleOrdinal()
+                .domain(getAllAreaNames())
+                .range(d3.schemeCategory10);
+
+            // filter data by the selected crime
+            const filteredData = crimeData.filter(d => d[crime] !== "no data" && +d.year != 2019);
+
+            // get unique area names
+            const areaNames = getAllAreaNames();
+
+            // set the margins and dimensions for the chart
+            const margin = { top: 30, right: 210, bottom: 50, left: 40 };
+            const chartWidth = width - margin.left - margin.right;
+            const chartHeight = height - margin.top - margin.bottom;
+
+            const x = d3.scaleTime()
+                .domain(d3.extent(filteredData, d => new Date(+d.year, 0, 1)))
+                .range([0, chartWidth]);
+
+
+            const y = d3.scaleLinear()
+                .domain([
+                    d3.min(crimeData.filter(d => d[crime] !== "no data" && !isNaN(+d[crime])), d => +d[crime]),
+                    d3.max(crimeData.filter(d => d[crime] !== "no data" && !isNaN(+d[crime])), d => +d[crime])
+                ])
+                .range([height - margin.bottom, margin.top]);
+
+
+            const line = d3.line()
+                .x(d => {
+                    const date = new Date(+d.year, 0, 1);
+                    const xValue = x(date);
+                    return xValue;
+                })
+                .y(d => {
+                    const yValue = y(+d[crime]);
+                    return yValue;
+                });
+
+            // create the chart container and translate it to the appropriate position
+            const chart = svg.append("g")
+                .attr("transform", `translate(${margin.left}, ${margin.top})`);
+
+            // create a group for each area
+            const areaGroups = chart.selectAll(".area-group")
+                .data(areaNames)
+                .enter()
+                .append("g")
+                .attr("class", "area-group");
+
+            // create the lines for each area
+            areaGroups.append("path")
+                .datum(d => filteredData.filter(data => data.area_name === d))
+                .attr("class", "line")
+                .attr("fill", "none")
+                .attr("stroke", d => colorScale(d[0].area_name))
+                .attr("stroke-width", 1.5)
+                .attr("d", line);
+
+            areaGroups.selectAll("circle")
+                .data(d => filteredData.filter(data => data.area_name === d))
+                .enter()
+                .append("circle")
+                .attr("cx", d => x(new Date(+d.year, 0, 1)))
+                .attr("cy", d => y(+d[crime]))
+                .attr("r", 3)
+                .attr("fill", d => colorScale(d.area_name))
+                .attr("stroke", "white")
+                .attr("stroke-width", 1)
+                .on("mouseover", (event, d) => {
+                    d3.select("#tooltip")
+                        .style("opacity", 1)
+                        .html(`${prettifyAreaName(d.area_name)}<br>${prettifyCrimeName(crime)}: <b>${d[crime]}</b><br>Year: ${d.year}`);
+                })
+                .on("mousemove", (event) => {
+                    d3.select("#tooltip")
+                        .style("left", (event.pageX + 10) + "px")
+                        .style("top", (event.pageY - 15) + "px");
+                })
+                .on("mouseout", () => {
+                    d3.select("#tooltip")
+                        .style("opacity", 0);
+                });
+
+            // add the x-axis to the chart
+            xaxis = chart.append("g")
+                .attr("class", "axis x-axis")
+                .call(d3.axisBottom(x));
+            // align top of x axis with bottom of y axis so the lines meet at the origin
+            xaxisheight = xaxis.node().getBBox().height;
+            xaxis.attr("transform", `translate(0, ${chartHeight + xaxisheight + 10})`)
+
+            // add the y-axis to the chart
+            chart.append("g")
+                .attr("class", "axis y-axis")
+                .call(d3.axisLeft(y).ticks(10));
+
+            // add the chart title
+            chart.append("text")
+                .attr("class", "chart-title")
+                .attr("x", chartWidth / 2)
+                .attr("y", -margin.top / 2)
+                .attr("text-anchor", "middle")
+                .text(`Crime: ${prettifyCrimeName(crime)}`);
+
+            createLegend(svg, colorScale, areaNames);
+        }
+
+
+
+        function createVisualization(loadedCrimeData) {
+
+            crimeData = loadedCrimeData;
+
+            selectedCrime = fixURLCrimeName(getURLparam("crime"))
+
+            plotAreaComparisonGraph(selectedCrime ? selectedCrime : "dacoity")
+
+        }
+
+        d3.csv(crimeDataURL).then(createVisualization)
+
+    </script>
+</body>
+
+</html>

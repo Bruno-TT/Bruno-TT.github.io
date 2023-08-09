@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Accounting for Correlations</title>
+  <script src="lib.js"></script>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pca-js@1.0.0/pca.min.js"></script>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    body {
+      margin: 0 auto;
+    }
+
+    rect {
+      fill: #00a7d0;
+    }
+
+    #axis {
+      fill: #000000;
+      /* stroke: "black" */
+    }
+
+    #tooltip {
+      position: fixed;
+      pointer-events: none;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>Accounting for Correlations</h1>
+  <p>
+    You may have noticed that <a href="choropleth.html">the same areas seem to tend to have the highest rates of any
+      given crime in any given year</a>
+
+    <br><br>
+
+    There are many factors that would influence why any given area has more or less crime, e.g. population,
+    socioeconomic factors, etc.
+
+    <br><br>
+
+    However, this makes our data harder to digest - e.g. the Dhaka division almost always has more crime than the Khulna
+    division.
+
+    <br><br>
+
+    In fact, <a href="correlogram.html">there are correlations between almost every pair of crimes</a>, regardless of
+    region or year.
+
+    <br><br>
+
+    So what if we want to see the severity of any crime in any region, relative to that region's normal crime rates?
+
+    <br><br>
+
+    Using a technique known as principal component analysis, we can condense each region down to a single number,
+    reflecting the general levels of crime in that region. (Hover over the blue marks!)
+
+  </p>
+
+  <svg id="crime-index-plot"></svg>
+  <p>
+    Using this crime index representation, we can then make estimates for each region about how many instances of each
+    crime we would expect to occur.
+
+    <br><br>
+
+    We can then <a href="both.html">compare the actual observed values to these predictions</a>, allowing us to see
+    which areas have high and low levels of each crime, relative to that areas average crimes rates.
+  </p>
+  <script>
+    let crimeData
+    let tooltip
+    d3.csv(crimeDataURL).then(plotCrimeIndex)
+
+    function displayTooltip(event, d) {
+
+      d3.select("#tooltip")
+        .style("opacity", 1)
+        .style("left", (event.pageX + 10) + "px")
+        .style("top", (event.pageY - 15) + "px")
+        .html(`${prettifyAreaName(d.area_name)}`);
+
+    }
+
+
+    function hideTooltip(event, d) {
+      d3.select("#tooltip")
+        .style("opacity", 0)
+    }
+
+    function plotCrimeIndex(loadedCrimeData) {
+      crimeData = loadedCrimeData;
+      crimeIndexData = calculateCrimeExpectancyDeviations(false, false)
+      svgwidth = 800
+      svgheight = 75
+      svg = d3.select("#crime-index-plot")
+        .attr("width", svgwidth)
+        .attr("height", svgheight)
+
+      var margin = { top: 10, right: 180, bottom: 10, left: 20 }
+      width = svgwidth - margin.left - margin.right
+      height = svgheight - margin.top - margin.bottom
+
+      data = []
+      for (i = 0; i < crimeIndexData.areaIndex.length; i++) {
+        data.push({ area_name: crimeIndexData.areaIndex[i], severity: crimeIndexData.area_severities[i] })
+      }
+
+      var x = d3.scaleLinear()
+        .domain(d3.extent(crimeIndexData.area_severities))
+        .range([0, width])
+
+      tooltip = d3.select("body").append("div")
+        .attr("id", "tooltip")
+        .style("position", "absolute")
+        .style("background-color", "white")
+        .style("padding", "5px")
+        .style("border", "1px solid black")
+        .style("border-radius", "3px")
+        .style("opacity", 0);
+
+      tickHeight = 20
+      tickWidth = 3
+
+      svg.append("text")
+        .attr("y", 35)
+        .text("Less Crime");
+
+      svg.append("text")
+        .attr("y", 35)
+        .attr("x", svgwidth - 90)
+        .text("More Crime");
+
+      g = svg.append("g")
+        .attr("transform", "translate(100,0)")
+
+
+      g.append("rect")
+        .attr("x", 0)
+        .attr("y", height / 2)
+        .attr("width", width)
+        .attr("height", 1)
+        .attr("id", "axis")
+
+
+      g.selectAll()
+        .data(data)
+        .enter()
+        .append("rect")
+        .attr("x", d => (x(d.severity) - tickWidth / 2))
+        .attr("y", (height - tickHeight) / 2)
+        .attr("width", tickWidth)
+        .attr("height", tickHeight)
+        .attr("id", d => { d.area_name })
+        .on("mouseenter", displayTooltip)
+        .on("mousemove", displayTooltip)
+        .on("mouseover", displayTooltip)
+        .on("mouseleave", hideTooltip);
+
+    }
+  </script>
+</body>
+
+</html>

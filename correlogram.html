@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Correlation View</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/maxshuty/accessible-web-components@latest/dist/simpleRange.min.js"></script>
+  <script src="lib.js"></script>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .range-selector-container {
+      width: 700px;
+    }
+
+    #back-button {
+      height: 35px;
+      float: right;
+      margin-top: 30px;
+      margin-left: 350px;
+    }
+  </style>
+</head>
+
+<body>
+  <div style="display: flex; gap:20px;">
+    <h1>
+      Crime Correlogram
+    </h1>
+    <button id="back-button">Back</button>
+  </div>
+  <div class="range-selector-container">
+    <range-selector id="rangeSelector1" min-label="Minimum" max-label="Maximum" min-range="2010" max-range="2019"
+      number-of-legend-items-to-show="0" />
+  </div>
+  <br>
+
+  <script>
+    let currentCrime = "dacoity";
+    document.querySelectorAll('input[name="crime"]').forEach(el => {
+      el.addEventListener('change', event => {
+        updateVisualization();
+      });
+    });
+
+    const tooltip = d3.select("body")
+      .append("div")
+      .attr("class", "tooltip")
+      .style("opacity", 0)
+      .style("position", "absolute")
+      .style("background-color", "white")
+      .style("padding", "5px")
+      .style("border", "1px solid black")
+      .style("border-radius", "5px");
+
+    const width = 10000;
+    const height = 10000;
+    let axisTicks = 0;
+    let minDate = 2010;
+    let maxDate = 2019;
+    const plotSize = 75;
+    const plotMargin = 25;
+    let crimeData;
+    let correlations = new Map();
+    let xOffset = 200
+
+    const colorScale = d3.scaleSequential()
+      .domain([0, 1])
+      .interpolator(d3.interpolateRdYlGn);
+
+
+    function dateSliderChanged(event) {
+      minDate = event.detail.minRangeValue;
+      maxDate = event.detail.maxRangeValue;
+      updateVisualization();
+    }
+
+    window.addEventListener('range-changed', dateSliderChanged);
+
+    function getCurrentDataRange(crime) {
+      return getDataRange(getAllAreaNames(), getSelectedYears(), crime);
+    }
+
+    function getSelectedYears() {
+      return d3.range(minDate, maxDate)
+    }
+
+    function getSelectedAreaNames() {
+      const selectedCheckboxes = document.querySelectorAll('input[name="area"]:checked');
+      const selectedAreaNames = [];
+      selectedCheckboxes.forEach(checkbox => {
+        selectedAreaNames.push(checkbox.value);
+      });
+      return selectedAreaNames;
+    }
+
+    // taken from https://stackoverflow.com/a/41089665/7164523
+    const pcorr = (x, y) => {
+      let sumX = 0,
+        sumY = 0,
+        sumXY = 0,
+        sumX2 = 0,
+        sumY2 = 0;
+      const minLength = x.length = y.length = Math.min(x.length, y.length),
+        reduce = (xi, idx) => {
+          const yi = y[idx];
+          sumX += xi;
+          sumY += yi;
+          sumXY += xi * yi;
+          sumX2 += xi * xi;
+          sumY2 += yi * yi;
+        }
+      x.forEach(reduce);
+      return (minLength * sumXY - sumX * sumY) / Math.sqrt((minLength * sumX2 - sumX * sumX) * (minLength * sumY2 - sumY * sumY));
+    };
+
+    function calculateCorrelationFromFilteredData(filteredData, crime1, crime2) {
+      xs = []
+      ys = []
+      filteredData.forEach(d => {
+        xs.push(+d[crime1]);
+        ys.push(+d[crime2])
+      });
+      return pcorr(xs, ys);
+    }
+
+    function getGraphAtCoords(x, y) {
+      const plotIndexX = Math.floor((x - plotMargin - xOffset) / (plotSize + plotMargin));
+      const plotIndexY = Math.floor((y - plotMargin) / (plotSize + plotMargin));
+
+      const crime1 = crimes[plotIndexY + 1];
+      const crime2 = crimes[plotIndexX];
+
+      if (plotIndexX >= plotIndexY + 1 || crime1 == null || crime2 == null) {
+        return null
+      } else {
+        return {
+          crime1: crime1,
+          crime2: crime2
+        };
+      }
+    }
+
+    function updateTooltip(event) {
+      const svgCoords = d3.pointer(event, svg.node());
+      const graphInfo = getGraphAtCoords(svgCoords[0], svgCoords[1]);
+
+      if (graphInfo) {
+        const crime1 = graphInfo.crime1;
+        const crime2 = graphInfo.crime2;
+        const correlationValue = correlations.get(`${crime1},${crime2}`);
+
+        tooltip.html(`Crime 1: ${prettifyCrimeName(crime1)}<br>Crime 2: ${prettifyCrimeName(crime2)}<br>Correlation: ${correlationValue.toFixed(4)}`)
+          .style("left", `${event.pageX + 15}px`)
+          .style("top", `${event.pageY - 30}px`)
+          .style("opacity", 1);
+      } else {
+        tooltip.style("opacity", 0);
+      }
+    }
+
+    
+
+    // sometimes the min and max are the same, leading to unexpected behaviour and circles being drawn out the bounds
+    // this forces them to be inside the bounds
+    function forceBounds(val, boundMin, boundMax) {
+      if (val <= boundMin) { return boundMin }
+      if (val >= boundMax) { return boundMax }
+      return val
+    }
+
+    function createScatterplot(crime1, crime2, width, height, svgGroup) {
+      const selectedAreaNames = getSelectedAreaNames();
+      const selectedYears = getSelectedYears();
+      const crime1range = getDataRange(selectedAreaNames, selectedYears, crime1, false)
+      const crime2range = getDataRange(selectedAreaNames, selectedYears, crime2, false)
+      const xScale = d3.scaleLinear()
+        .domain([crime1range.rangeMin, crime1range.rangeMax])
+        .range([0, width])
+
+      const yScale = d3.scaleLinear()
+        .domain([crime2range.rangeMin, crime2range.rangeMax])
+        .range([0, -height])
+
+      const filteredData = crimeData.filter(d => selectedAreaNames.includes(d.area_name) && +d.year >= minDate && +d.year <= maxDate);
+
+      corr = calculateCorrelationFromFilteredData(filteredData, crime1, crime2);
+      correlations.set(`${crime1},${crime2}`, corr);
+      colour = colorScale(corr);
+
+      const circles = svgGroup.selectAll("circle")
+        .data(filteredData)
+        .enter()
+        .append("circle")
+        .attr("cx", d => forceBounds(xScale(d[crime1]), 0, width))
+        .attr("cy", d => forceBounds(yScale(d[crime2]), -height, 0))
+        .attr("r", 3)
+        .attr("fill", d => colour);
+
+      const xAxis = d3.axisBottom(xScale).ticks(axisTicks);
+      const yAxis = d3.axisLeft(yScale).ticks(axisTicks);
+
+      svgGroup.append("g")
+        .call(xAxis);
+
+      svgGroup.append("g")
+        .call(yAxis);
+
+    }
+
+    function createVisualization(loadedCrimeData) {
+      crimeData = loadedCrimeData;
+      const areaNames = getAllAreaNames()
+
+      d3.select("#back-button").on("click", () => { window.location.href = "PCAexplanation.html" });
+
+      d3.select("body")
+        .selectAll("label")
+        .data(areaNames)
+        .enter()
+        .append("label")
+        .style("display", "inline-block") // Keep the label and input elements in the same line
+        .style("white-space", "nowrap") // Prevent text wrapping
+        .style("margin-right", "30px") // Add some margin between the checkbox and the label
+        .text(areaName => prettifyAreaName(areaName))
+        .append("input")
+        .attr("type", "checkbox")
+        .attr("name", "area")
+        .attr("value", d => d)
+        .property("checked", true)
+        .on("change", updateVisualization);
+
+      d3.select("body")
+        .append("button")
+        .text("Select All")
+        .style("display", "inline-block")
+        .style("margin-right", "10px")
+        .on("click", function () {
+          d3.selectAll("input[type=checkbox]")
+            .property("checked", true)
+          updateVisualization();
+        });
+        calculateCrimeExpectancyDeviations
+      d3.select("body")
+        .append("button")
+        .text("Select None")
+        .style("display", "inline-block")
+        .style("margin-left", "10px")
+        .on("click", function () {
+          d3.selectAll("input[type=checkbox]")
+            .property("checked", false)
+          updateVisualization();
+        });
+
+      const svg = d3.select("body")
+        .append("svg")
+        .attr("width", width)
+        .attr("height", height)
+        .on("mousemove", updateTooltip);
+
+      const leftCrimeLabels = svg.selectAll(".left-crime-label")
+        .data(crimes)
+        .enter()
+        .append("text")
+        .attr("x", 0)
+        .attr("y", (d, i) => i == 0 ? -100 : (plotSize + plotMargin) * i)
+        .attr("text-anchor", "left")
+        .text(crime => prettifyCrimeName(crime));
+
+      const bottomCrimeLabels = svg.selectAll(".bottom-crime-label")
+        .data(crimes)
+        .enter()
+        .append("text")
+        .attr("x", (d, i) => i == crimes.length - 1 ? -999 : xOffset + plotMargin + i * (plotSize + plotMargin))
+        .attr("y", (d, i) => crimes.length * (plotSize + plotMargin))
+        .attr("text-anchor", "left")
+        .attr("transform", (d, i) => `rotate(45, ${xOffset + plotMargin + i * (plotSize + plotMargin)}, ${crimes.length * (plotSize + plotMargin)})`)
+        .text(crime => prettifyCrimeName(crime));
+
+      updateVisualization();
+    }
+
+    function updateVisualization() {
+      const selectedAreaNames = getSelectedAreaNames();
+      svg = d3.select("svg");
+      svg.selectAll("g").remove();
+
+      crimes.forEach((crime1, i) => {
+        crimes.forEach((crime2, j) => {
+          if (i > j) {
+            const svgGroup = svg.append("g")
+              .attr("transform", `translate(${xOffset + plotMargin + (plotSize + plotMargin) * j},${plotMargin + (plotSize + plotMargin) * i})`);
+            createScatterplot(crime1, crime2, plotSize, plotSize, svgGroup);
+          }
+        });
+
+      });
+
+
+    }
+
+    d3.csv(crimeDataURL).then(createVisualization)
+  </script>
+</body>
+
+</html>

@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Interactive Map View</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script src="lib.js"></script>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    body {
+      margin: 0 auto;
+      line-height: 1.4;
+    }
+
+    button {
+      float: right;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>Interactive Bangladesh Crime Map</h1>
+  </div>
+  <div style="display:flex; gap: 10px;">
+    <div style="display:block;">
+      <input type="range" min="2010" max="2018" value="2010" step="1" id="year-slider" />
+      <span id="year-display">2010</span>
+    </div>
+    <div style="display: flex; justify-content: right;">
+      <button id="linegraph-button">Line Graph View (obsolete)</button>
+    </div>
+  </div>
+  <div id="crime-selector">
+    <label>
+        <input type="radio" name="crime" value="dacoity" checked /> Gang Robbery
+    </label>
+    <label>
+        <input type="radio" name="crime" value="robbery " /> Robbery
+    </label>
+    <label>
+        <input type="radio" name="crime" value="murder" /> Murder
+    </label>
+    <label>
+        <input type="radio" name="crime" value="riot " /> Riot
+    </label>
+    <label>
+        <input type="radio" name="crime" value="woman_child_Repression" /> Woman and Child Repression
+    </label>
+    <label>
+        <input type="radio" name="crime" value="kidnapping" /> Kidnapping
+    </label>
+    <label>
+        <input type="radio" name="crime" value="police_assault" /> Police Assault
+    </label>
+    <label>
+        <input type="radio" name="crime" value="burglary" /> Burglary
+    </label>
+    <label>
+        <input type="radio" name="crime" value="theft" /> Theft
+    </label>
+    <label>
+        <input type="radio" name="crime" value="other_cases" /> Other Cases
+    </label>
+</div>
+
+  <div id="map-container" class="map"></div>
+  <br>
+  <div style="display: flex; justify-content: center;">
+    <button id="PCA-button">Why are the same regions always the darkest?</button>
+  </div>
+  <script>
+
+    let currentCrime = "dacoity";
+    document.querySelectorAll('input[name="crime"]').forEach(el => {
+      el.addEventListener('change', event => {
+        currentCrime = event.target.value;
+        updateVisualization();
+      });
+    });
+    const width = 800;
+    const height = 580;
+
+    const projection = d3.geoMercator()
+      .center([90.4125, 23.8103])
+      .scale(5000)
+      .translate([width / 2, height / 2]);
+
+    const path = d3.geoPath().projection(projection);
+
+   
+
+    // select the specified radio button
+    function selectRadio(crime) {
+      var radioButtons = document.getElementsByName("crime");
+      for (var i = 0; i < radioButtons.length; i++) {
+        if (radioButtons[i].value === crime) {
+          radioButtons[i].checked = true;
+          break;
+        }
+      }
+    }
+
+    // set year slider to specified year
+    function selectYear(year) {
+      yearSlider.value = year;
+      yearDisplay.textContent = year;
+    }
+
+
+
+
+    function getSelectedYear() {
+      return +yearSlider.value;
+    }
+
+    function getSelectedCrime() {
+      const crimeRadio = document.querySelector('input[name="crime"]:checked');
+      return crimeRadio.value;
+    }
+
+
+    function drawLegend() {
+      legendContainer.selectAll("*").remove();
+      const { rangeMin: minDomain, rangeMax: maxDomain } = getCurrentDataRangeChoropleth();
+      const legendData = Array.from({ length: 6 }, (d, i) => minDomain + i * (maxDomain - minDomain) / 5);
+
+      const legend = legendContainer.selectAll(".legend")
+        .data(legendData)
+        .enter()
+        .append("g")
+        .attr("class", "legend")
+        .attr("transform", (d, i) => `translate(${i * 40 - 5}, 20)`);
+
+      legend.append("rect")
+        .attr("width", 40)
+        .attr("height", 10)
+        .style("fill", colorScale);
+
+      legend.append("text")
+        .attr("x", 20)
+        .attr("y", 25)
+        .attr("dy", ".35em")
+        .text(d => Math.round(d))
+        .style("text-anchor", "middle")
+        .style("font-size", "12px");
+    }
+
+    let crimeData;
+    let tooltip;
+    let tier1geoData;
+    let tier2geoData;
+    let colorScale;
+    let hoveringRegionsCache = new Set();
+
+    const svg = d3.select("#map-container")
+      .append("svg")
+      .attr("width", width)
+      .attr("height", height)
+      .style("display", "block");
+
+    const legendContainer = svg.append("g")
+      .attr("id", "legend-container")
+      .attr("transform", `translate(${width / 2 - 100}, ${height - 50})`);
+
+
+    tooltip = d3.select("body").append("div")
+      .attr("id", "tooltip")
+      .style("position", "absolute")
+      .style("background-color", "white")
+      .style("padding", "5px")
+      .style("border", "1px solid black")
+      .style("border-radius", "3px")
+      .style("opacity", 0);
+
+    const yearSlider = document.getElementById("year-slider");
+    const yearDisplay = document.getElementById("year-display");
+    const crimeRadio = document.getElementById("crime-selector");
+
+    yearSlider.addEventListener("input", function () {
+      yearDisplay.textContent = yearSlider.value;
+      updateVisualization();
+    });
+
+    yearDisplay.textContent = yearSlider.value; // Set initial year display value
+
+
+    function createVisualization(loadedtier1geoData, loadedtier2geoData, loadedCrimeData) {
+
+      selectedCrime = fixURLCrimeName(getURLparam("crime"));
+      selectedYear = getURLparam("year");
+
+      d3.select("#PCA-button").on("click", () => { window.location.href = "PCAexplanation.html" })
+
+      // if a crime was passed in the url, select preset
+      if (selectedCrime !== null) {
+        selectRadio(selectedCrime)
+      }
+
+      // ditto for year
+      if (selectedYear !== null) {
+        selectYear(selectedYear)
+      }
+
+      colorScale = d3.scaleSequential()
+        .interpolator(d3.interpolateBuPu);
+
+      const year = getSelectedYear();
+
+      // make loaded data globally available
+      crimeData = loadedCrimeData;
+      tier1geoData = loadedtier1geoData;
+      tier2geoData = loadedtier2geoData;
+
+      // draw map
+      drawRegions(tier1geoData, tier2geoData, svg);
+
+
+      svg.on("mousemove", updateChoroplethTooltip);
+
+      updateVisualization();
+    }
+
+    function updateVisualization() {
+
+      let year = getSelectedYear();
+      currentCrime = getSelectedCrime();
+
+      // update button redirect
+      d3.select("#linegraph-button").on("click", function () {
+        window.location.href = `linegraph.html?crime=${currentCrime}`;
+      })
+      .text(`Line graph view for ${prettifyCrimeName(currentCrime)} (obsolete)`);
+
+      // update color scale
+      dr = getCurrentDataRangeChoropleth()
+      colorScale.domain([dr.rangeMin, dr.rangeMax])
+
+
+      svg.selectAll(".tier2")
+        .attr("fill", tier2Feature => {
+          datapoint = tier2FeatureCrimeAndYearToDatapoint(tier2Feature, currentCrime, year, true);
+          return datapoint !== "no data" ? colorScale(datapoint) : "#FFFFFF";
+        });
+
+      drawLegend();
+
+    }
+
+    Promise.all([
+      d3.json(tier1mapDataURL),
+      d3.json(tier2mapDataURL),
+      d3.csv(crimeDataURL)
+    ]).then(([tier1geoData, tier2geoData, crimeData]) => {
+      createVisualization(tier1geoData, tier2geoData, crimeData);
+    });
+  </script>
+</body>
+
+</html>

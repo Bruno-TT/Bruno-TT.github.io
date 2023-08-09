@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crime Comparison View</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/pca-js@1.0.0/pca.min.js"></script>
+    <script src="lib.js"></script>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        button {
+            height: 35px;
+            margin-top: 15px;
+            margin-left: 50px;
+        }
+
+        #linegraph-button {
+            float: right;
+        }
+    </style>
+</head>
+
+<body>
+    <div style="display: flex; gap: 10px;">
+        <div style="display: block;">
+            <h1>Absolute crime rates</h1>
+
+            <div>
+                <input type="range" min="2010" max="2018" value="2010" step="1" id="year-slider" />
+                <span id="year-display">2010</span>
+                <!-- <button id="linegraph-button">Line Graph View</button> -->
+            </div>
+            <div id="crime-selector">
+                <label>
+                    <input type="radio" name="crime" value="dacoity" checked /> Gang Robbery
+                </label>
+                <label>
+                    <input type="radio" name="crime" value="robbery " /> Robbery
+                </label>
+                <label>
+                    <input type="radio" name="crime" value="murder" /> Murder
+                </label>
+                <label>
+                    <input type="radio" name="crime" value="riot " /> Riot
+                </label>
+                <label>
+                    <input type="radio" name="crime" value="woman_child_Repression" /> Woman and Child Repression
+                </label>
+                <label>
+                    <input type="radio" name="crime" value="kidnapping" /> Kidnapping
+                </label>
+                <label>
+                    <input type="radio" name="crime" value="police_assault" /> Police Assault
+                </label>
+                <label>
+                    <input type="radio" name="crime" value="burglary" /> Burglary
+                </label>
+                <label>
+                    <input type="radio" name="crime" value="theft" /> Theft
+                </label>
+                <label>
+                    <input type="radio" name="crime" value="other_cases" /> Other Cases
+                </label>
+            </div>
+            <div id="chloropleth-container" class="map"><svg display="block" id="chloropleth-svg"></svg></div>
+            <button id="home-button">Home</button>
+        </div>
+        <div>
+            <div style="display: flex;">
+                <h1>Relative crime rates</h1>
+                <h1><a href="PCAexplanation.html">?</a></h1>
+
+            </div>
+            <div style="display:flex;">
+                <h4 id="title-container"></h4>
+            </div>
+            <svg display="block" id="heatmap-svg"></svg>
+            <button id="prediction-toggle-button">Prediction Mode: Area & Year</button>
+        </div>
+
+    </div>
+
+
+
+    <script>
+
+        let currentCrime = "dacoity";
+        document.querySelectorAll('input[name="crime"]').forEach(el => {
+            el.addEventListener('change', event => {
+                currentCrime = event.target.value;
+                updateVisualization();
+            });
+        });
+        const chlorowidth = 800;
+        const chloroheight = 580;
+
+        const heatmapwidth = 1100;
+        const heatmapheight = 680;
+
+        let crimeData;
+        let tooltip;
+        let tier1geoData;
+        let tier2geoData;
+        let colorScale;
+        let hoveringRegionsCache = new Set();
+        let selectedArea;
+
+        let cachedTooltipd;
+        let per_year_predictions = true;
+
+
+        const projection = d3.geoMercator()
+            .center([90.4125, 23.8103])
+            .scale(5000)
+            .translate([chlorowidth / 2, chloroheight / 2]);
+
+        const path = d3.geoPath().projection(projection);
+
+
+
+        // select the specified radio button
+        function selectRadio(crime) {
+            var radioButtons = document.getElementsByName("crime");
+            for (var i = 0; i < radioButtons.length; i++) {
+                if (radioButtons[i].value === crime) {
+                    radioButtons[i].checked = true;
+                    break;
+                }
+            }
+        }
+
+        function toggle_prediction_mode(event) {   
+        
+            per_year_predictions=!per_year_predictions;
+            plotCrimeComparisonDeviationHeatmap(selectedArea)
+            highlightHeatmap(getSelectedYear(), getSelectedCrime());
+            d3.select("#prediction-toggle-button").text(per_year_predictions ? "Prediction Mode: Area & Year" : "Prediction Mode: Area")
+
+
+        }
+
+        // set year slider to specified year
+        function selectYear(year) {
+            yearSlider.value = year;
+            yearDisplay.textContent = year;
+        }
+
+        // mapping from a tier 1 feature object -> area name
+        // this will always return "division" since a tier 1 feature doesn't uniquely identify a feature over a division
+        function tier1featureToAreaName(tier1Feature) {
+            return tier1Feature.properties.ADM1_EN.toLowerCase() + " division";
+        }
+
+
+
+        function getSelectedYear() {
+            return +yearSlider.value;
+        }
+
+        function getSelectedCrime() {
+            const crimeRadio = document.querySelector('input[name="crime"]:checked');
+            return crimeRadio.value;
+        }
+
+
+        function drawLegend() {
+            legendContainer.selectAll("*").remove();
+            const { rangeMin: minDomain, rangeMax: maxDomain } = getCurrentDataRangeChoropleth();
+            const legendData = Array.from({ length: 6 }, (d, i) => minDomain + i * (maxDomain - minDomain) / 5);
+
+            const legend = legendContainer.selectAll(".legend")
+                .data(legendData)
+                .enter()
+                .append("g")
+                .attr("class", "legend")
+                .attr("transform", (d, i) => `translate(${i * 40 - 5}, 20)`);
+
+            legend.append("rect")
+                .attr("width", 40)
+                .attr("height", 10)
+                .style("fill", colorScale)
+                .style("cursor", "pointer");
+
+            legend.append("text")
+                .attr("x", 20)
+                .attr("y", 25)
+                .attr("dy", ".35em")
+                .text(d => Math.round(d))
+                .style("text-anchor", "middle")
+                .style("font-size", "12px");
+        }
+
+        function displayTooltip(event, d) {
+            
+            d3.select("#tooltip")
+                .style("left", (event.pageX + 10) + "px")
+                .style("top", (event.pageY - 15) + "px")
+                .style("opacity", 1)
+            if (d !== cachedTooltipd) {
+                d3.select("#tooltip")
+                    .html(`${d.year} - ${prettifyAreaName(d.area_name)} - ${prettifyCrimeName(d.crime)}<br>Expected: ${d.expectedValue.toFixed(1)}<br>Observed: <b>${d.observedValue}</b><br>Deviation: ${d.deviation >= 0 ? '+' : ''}${Math.floor(100 * d.deviation)}%`);
+                cachedTooltipd = d
+            }
+
+
+        }
+
+
+        // highlight the given area on the choropleth
+        // logic differs for metropolitans and divisions
+        function highlightChoropleth(area) {
+
+            // if it's a division
+            if (area.includes("division")) {
+
+                // unhighlight all tier 2 elements
+                choroplethSVG.selectAll(".tier2")
+                    .attr("stroke", tier2normalColour)
+                    .attr("stroke-width", tier2normalStrokeWidth);
+
+                // highlight the corresponding tier 1 element
+                choroplethSVG.selectAll(".tier1")
+                    .attr("stroke", d => {
+                        return tier1featureToAreaName(d) == area ? highlightColour : tier1normalColour
+                    })
+                    .attr("stroke-width", d => {
+                        return tier1featureToAreaName(d) == area ? tier1highlightStrokeWidth : tier1normalStrokeWidth
+                    })
+                    // redraw on top
+                    .each(function (d) {
+                        this.parentNode.appendChild(this);
+                    })
+                    .each(function (d) {
+                        if (tier1featureToAreaName(d) === area) {
+                            this.parentNode.appendChild(this);
+                        }
+                    });
+
+
+
+            }
+            // if it's a metropolitan
+            else {
+
+                // unhighlight all tier 1 elements
+                choroplethSVG.selectAll(".tier1")
+                    .attr("stroke", tier1normalColour)
+                    .attr("stroke-width", tier1normalStrokeWidth)
+
+                // highlight corresponding tier 2 element
+                choroplethSVG.selectAll(".tier2")
+                    .attr("stroke", d => {
+                        return tier2featureToAreaName(d) == area ? highlightColour : tier2normalColour
+                    })
+                    .attr("stroke-width", d => {
+                        return tier2featureToAreaName(d) == area ? tier2highlightStrokeWidth : tier2normalStrokeWidth
+                    })
+                    // redraw on top
+                    .each(function (d) {
+                        if (tier2featureToAreaName(d) === area) {
+                            this.parentNode.appendChild(this);
+                        }
+                    });
+            }
+
+        }
+
+
+
+        function highlightHeatmap(year, crime) {
+
+            heatmapSVG.selectAll("rect")
+                .attr("stroke-width", d => { return +d.year == +year && d.crime == crime ? 3 : 0 })
+
+        }
+
+
+       
+
+        const choroplethSVG = d3.select("#chloropleth-svg")
+            .attr("width", chlorowidth)
+            .attr("height", chloroheight)
+
+        const heatmapSVG = d3.select("#heatmap-svg")
+            .attr("width", heatmapwidth)
+            .attr("height", heatmapheight)
+
+
+        const legendContainer = choroplethSVG.append("g")
+            .attr("id", "legend-container")
+            .attr("transform", `translate(${chlorowidth / 2 - 100}, ${chloroheight - 50})`);
+
+
+        tooltip = d3.select("body").append("div")
+            .attr("id", "tooltip")
+            .style("position", "absolute")
+            .style("background-color", "white")
+            .style("padding", "5px")
+            .style("border", "1px solid black")
+            .style("border-radius", "3px")
+            .style("opacity", 0);
+
+        const yearSlider = document.getElementById("year-slider");
+        const yearDisplay = document.getElementById("year-display");
+        const crimeRadio = document.getElementById("crime-selector");
+
+        yearSlider.addEventListener("input", function () {
+            yearDisplay.textContent = yearSlider.value;
+            updateVisualization();
+        });
+
+        yearDisplay.textContent = yearSlider.value;
+
+        function plotCrimeComparisonDeviationHeatmap(area) {
+
+            selectedArea = area;
+
+            highlightChoropleth(area)
+
+            evdata = calculateCrimeExpectancyDeviations(false, per_year_predictions)
+
+            d3.select("#choropleth-button").remove();
+            heatmapSVG.selectAll("g").remove();
+
+            const colorScale = d3.scaleSequential()
+                .domain([2, -1])
+                .interpolator(d3.interpolateViridis);
+
+            // filter data by the selected area
+            const filteredData = crimeData.filter(d => d.area_name == area && +d.year != 2019);
+
+            // create a new array containing an object for each crime type per year
+            const crimeYearData = [];
+            filteredData.forEach(d => {
+                crimes.forEach(crime => {
+                    if (d.hasOwnProperty(crime)) {
+                        deviationData = calculateDeviationFromExpectation(evdata, d.year, d.area_name, crime, false, per_year_predictions)
+                        crimeYearData.push({
+                            area_name: d.area_name,
+                            year: d.year,
+                            crime: crime,
+                            observedValue: +d[crime],
+                            expectedValue: deviationData.expectedValue,
+                            deviation: deviationData.deviation
+                        });
+                    }
+                });
+            });
+
+            // set the margins and dimensions for the chart
+            const margin = { top: 30, right: 40, bottom: 50, left: 160 };
+            const chartWidth = heatmapwidth - margin.left - margin.right;
+            const chartHeight = heatmapheight - margin.top - margin.bottom;
+
+            const x = d3.scaleBand()
+                .domain(filteredData.map(d => new Date(+d.year, 0, 1)))
+                .range([0, chartWidth])
+                .padding(0.1);
+
+            const y = d3.scaleBand()
+                .domain(crimes)
+                .range([0, chartHeight])
+                .padding(0.1);
+
+            const maxCrimeValue = getCurrentDataRangeChoropleth().rangeMax
+
+            // create the chart container and translate it to the appropriate position
+            const chart = heatmapSVG.append("g")
+                .attr("transform", `translate(${margin.left}, ${margin.top})`);
+
+
+            // create the heatmap rectangles
+            chart.selectAll(".heatmap-rect")
+                .data(crimeYearData)
+                .enter()
+                .append("rect")
+                .attr("class", "heatmap-rect")
+                .attr("stroke-width", 0)
+                .attr("stroke", "red")
+                .attr("x", d => x(new Date(+d.year, 0, 1)))
+                .attr("y", d => y(d.crime))
+                .attr("width", x.bandwidth())
+                .attr("height", y.bandwidth())
+                .attr("fill", d => {
+                    return colorScale(d.deviation);
+                })
+                .on("mousemove", displayTooltip)
+                .on("click", (event, d) => {
+                    selectRadio(d.crime);
+                    selectYear(d.year);
+                    updateVisualization();
+                })
+
+            // add text to the heatmap rectangles
+            chart.selectAll(".heatmap-text")
+                .data(crimeYearData)
+                .enter()
+                .append("text")
+                .attr("class", "heatmap-text")
+                .attr("x", d => x(new Date(+d.year, 0, 1)) + x.bandwidth() / 2)
+                .attr("y", d => y(d.crime) + y.bandwidth() / 2)
+                .attr("text-anchor", "middle")
+                .attr("fill", "black")
+                .attr("dominant-baseline", "middle")
+                .text(d => `${d.deviation >= 0 ? '+' : ''}${Math.floor(100 * d.deviation)}%`)
+                .on("mousemove", displayTooltip)
+                .on("click", (event, d) => {
+                    selectRadio(d.crime);
+                    selectYear(d.year);
+                    updateVisualization();
+                });
+
+
+            // add the x-axis to the chart
+            chart.append("g")
+                .attr("class", "axis x-axis")
+                .attr("transform", `translate(0, ${chartHeight})`)
+                .call(d3.axisBottom(x).tickFormat(d3.timeFormat("%Y")));
+
+            // add the y-axis to the chart
+            chart.append("g")
+                .attr("class", "axis y-axis")
+                .call(d3.axisLeft(y).tickFormat(d => prettifyCrimeName(d)));
+
+            title = d3.select("#title-container")
+                .text(`Currently selected area: ${prettifyAreaName(area)}`);
+
+        }
+
+
+
+
+        function createVisualization(loadedtier1geoData, loadedtier2geoData, loadedCrimeData) {
+
+            d3.select("#home-button").on("click", () => { window.location.href = "index.html" })
+
+            d3.select("#prediction-toggle-button").on("click", toggle_prediction_mode)
+
+            selectedCrime = fixURLCrimeName(getURLparam("crime"));
+            selectedYear = getURLparam("year");
+
+            // if a crime was passed in the url, select preset
+            if (selectedCrime !== null) {
+                selectRadio(selectedCrime)
+            }
+
+            // ditto for year
+            if (selectedYear !== null) {
+                selectYear(selectedYear)
+            }
+
+            colorScale = d3.scaleSequential()
+                .interpolator(d3.interpolateBuPu);
+
+            const year = getSelectedYear();
+
+            // make loaded data globally available
+            crimeData = loadedCrimeData;
+            tier1geoData = loadedtier1geoData;
+            tier2geoData = loadedtier2geoData;
+
+            // draw map
+            drawRegions(tier1geoData, tier2geoData, choroplethSVG);
+
+
+            choroplethSVG.on("mousemove", updateChoroplethTooltip)
+
+            updateVisualization();
+        }
+
+        function updateVisualization() {
+
+            let year = getSelectedYear();
+            currentCrime = getSelectedCrime();
+            highlightHeatmap(year, currentCrime)
+
+            dr = getCurrentDataRangeChoropleth()
+            colorScale.domain([dr.rangeMin, dr.rangeMax])
+
+            choroplethSVG.selectAll(".tier2")
+                .style("cursor", "pointer")
+                .attr("fill", tier2Feature => {
+                    datapoint = tier2FeatureCrimeAndYearToDatapoint(tier2Feature, currentCrime, year, true);
+                    return datapoint !== "no data" ? colorScale(datapoint) : "#FFFFFF";
+                })
+                .on("click", (event, feature) => {
+                    // window.location.href = `heatmap.html?area=${tier2featureToAreaName(feature)}`
+                    plotCrimeComparisonDeviationHeatmap(tier2featureToAreaName(feature));
+                    highlightHeatmap(year, currentCrime);
+
+                });
+
+            drawLegend();
+
+        }
+
+        Promise.all([
+            d3.json(tier1mapDataURL),
+            d3.json(tier2mapDataURL),
+            d3.csv(crimeDataURL)
+        ]).then(([tier1geoData, tier2geoData, crimeData]) => {
+            selectedArea = null;
+            createVisualization(tier1geoData, tier2geoData, crimeData);
+            plotCrimeComparisonDeviationHeatmap(selectedArea ? selectedArea : "dhaka division");
+            updateVisualization();
+
+        });
+
+    </script>
+</body>
+
+</html>
