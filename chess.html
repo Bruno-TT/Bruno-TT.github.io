@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Chess Arena – Multi‑Weakening</title>
+
+    <!-- libs -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js" crossorigin="anonymous"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css"
+        crossorigin="anonymous">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js"
+        crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js" crossorigin="anonymous"></script>
+
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            background: #f3f4f6;
+            margin: 0;
+            padding: 2rem 1rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            color: #1f2937
+        }
+
+        #board {
+            width: 400px;
+            margin: 1rem auto
+        }
+
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: .5rem;
+            margin-top: 1rem
+        }
+
+        #status {
+            margin-top: 1rem;
+            font-size: 1.125rem
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Chess Arena</h1>
+
+    <div class="controls">
+        <label for="elo">Bot Elo:</label>
+        <select id="elo">
+            <option>200</option>
+            <option>400</option>
+            <option>600</option>
+            <option>800</option>
+            <option>1000</option>
+            <option selected>1200</option>
+            <option>1400</option>
+            <option>1600</option>
+            <option>1800</option>
+            <option>2000</option>
+            <option>2200</option>
+            <option>2400</option>
+            <option>2500</option>
+            <option>3000</option>
+        </select>
+        <button id="start-btn">Start</button>
+    </div>
+
+    <div id="game" style="display: none;">
+        <div id="board" style="display: none;"></div>
+        <p id="status" style="display: none;"></p>
+    </div>
+
+    <script>
+        /* --------------------------------------------------
+           Helper maps (depth, skill, randomness)
+        -------------------------------------------------- */
+        function depthForElo(elo) {
+            // console.log('Elo:', elo);
+            if (elo < 300) return 1;
+            if (elo < 500) return 2;
+            if (elo < 700) return 3;
+            if (elo < 900) return 4;
+            if (elo < 1100) return 5;
+            return 6; // 1100–1319
+        }
+
+        function skillForElo(elo) {
+            // console.log('Elo:', elo);
+            // Stockfish Skill Level 0‑20 (0 weakest)
+            if (elo < 300) return 0;
+            if (elo < 500) return 1;
+            if (elo < 700) return 3;
+            if (elo < 900) return 5;
+            if (elo < 1100) return 8;
+            return 12; // 1100–1319
+        }
+
+        function randomChanceForElo(elo) {
+            // console.log('Elo:', elo);
+            if (elo < 300) return 0.8;  // 60 % random
+            if (elo < 500) return 0.4;  // 30 %
+            return 0; // ≥500 – deterministic
+        }
+
+        /* --------------------------------------------------
+           DOM prep – hide board until started
+        -------------------------------------------------- */
+        document.getElementById('board').style.display = 'none';
+        document.getElementById('status').style.display = 'none';
+
+        /* --------------------------------------------------
+           Globals
+        -------------------------------------------------- */
+        const STOCKFISH_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.min.js';
+        let engine, ready = false, currentElo = 1200;
+
+        /* --------------------------------------------------
+           Utility: send command & log to console
+        -------------------------------------------------- */
+        function sfSend(cmd) {
+            console.log('%c[SEND] ' + cmd, 'color:#0a0');
+            engine.postMessage(cmd);
+        }
+
+        /* --------------------------------------------------
+           Boot engine
+        -------------------------------------------------- */
+        document.getElementById('start-btn').addEventListener('click', () => {
+            document.querySelector('.controls').style.display = 'none';
+            document.getElementById('game').style.display = 'block';
+            document.getElementById('board').style.display = 'block';
+            document.getElementById('status').style.display = 'block';
+            document.getElementById('status').textContent = 'Loading engine…';
+
+            fetch(STOCKFISH_CDN, { mode: 'cors' })
+                .then(r => r.text())
+                .then(code => {
+                    const blobURL = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }));
+                    engine = new Worker(blobURL);
+                    hookEngine();
+                })
+                .catch(err => alert('Failed to load Stockfish: ' + err));
+        });
+
+        /* --------------------------------------------------
+           Handle engine output
+        -------------------------------------------------- */
+        function hookEngine() {
+            engine.onmessage = e => {
+                const line = typeof e.data === 'string' ? e.data : e.data?.toString();
+                console.log('%c[SF]   ' + line, 'color:#09f');
+
+                if (line === 'uciok') {
+                    applyStrength();
+                    ready = true;
+                    if (chess.turn() === 'b') moveEngine();
+                    return;
+                }
+
+                if (line === 'readyok') return;
+
+                if (line.startsWith('bestmove')) {
+                    const best = line.split(' ')[1];
+                    chess.move({ from: best.slice(0, 2), to: best.slice(2, 4), promotion: 'q' });
+                    board.position(chess.fen());
+                    updateStatus();
+                }
+            };
+            sfSend('uci');
+        }
+
+        /* --------------------------------------------------
+           Apply strength settings each time elo changes
+        -------------------------------------------------- */
+        function applyStrength() {
+            const s = document.getElementById('status');
+
+            // Always set skill level (exists in this build)
+            const skill = currentElo >= 1320 ? 20 : skillForElo(currentElo);
+            sfSend('setoption name Skill Level value ' + skill);
+
+            if (currentElo >= 1320) {
+                // Attempt Elo limiter – ignored by this build but harmless
+                sfSend('setoption name UCI_LimitStrength value true');
+                sfSend('setoption name UCI_Elo value ' + currentElo);
+                s.textContent = `Engine limited to ~${currentElo} Elo (skill 20).`;
+            } else {
+                sfSend('setoption name UCI_LimitStrength value false');
+                s.textContent = `Depth‑capped & skill‑capped for ~${currentElo} Elo.`;
+            }
+            sfSend('isready');
+        }
+
+        /* --------------------------------------------------
+           Elo slider change handler
+        -------------------------------------------------- */
+        document.getElementById('elo').addEventListener('change', () => {
+            currentElo = parseInt(document.getElementById('elo').value, 10);
+            if (ready) applyStrength();
+        });
+
+        /* --------------------------------------------------
+           Chessboard init
+        -------------------------------------------------- */
+        const chess = new Chess();
+        const board = Chessboard('board', {
+            draggable: true,
+            pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png',
+            position: 'start',
+            onDragStart,
+            onDrop,
+            onSnapEnd: () => board.position(chess.fen())
+        });
+
+        // Optional FEN input
+        const fen = prompt('Enter FEN (blank for start):', '');
+        if (fen?.trim()) try { chess.load(fen.trim()); board.position(fen.trim()); } catch { }
+        updateStatus();
+
+        /* --------------------------------------------------
+           Drag callbacks
+        -------------------------------------------------- */
+        function onDragStart(src, piece) {
+            return !chess.game_over() &&
+                !((chess.turn() === 'w' && piece[0] === 'b') || (chess.turn() === 'b' && piece[0] === 'w'));
+        }
+
+        function onDrop(src, tgt) {
+            const mv = chess.move({ from: src, to: tgt, promotion: 'q' });
+            if (!mv) return 'snapback';
+            updateStatus();
+            setTimeout(moveEngine, 200);
+        }
+
+        /* --------------------------------------------------
+           Engine move logic with randomness
+        -------------------------------------------------- */
+        function moveEngine() {
+            if (!ready || chess.game_over()) return;
+
+            // Chance for a pure random move instead of engine search
+            const randChance = randomChanceForElo(currentElo);
+            if (Math.random() < randChance) {
+                const moves = chess.moves();
+                const pick = moves[Math.floor(Math.random() * moves.length)];
+                chess.move(pick);
+                board.position(chess.fen());
+                updateStatus();
+                return;
+            }
+
+            sfSend('position fen ' + chess.fen());
+
+            if (currentElo < 1320) {
+                const depth = depthForElo(currentElo);
+                sfSend('go depth ' + depth);
+            } else {
+                sfSend('go movetime 1000');
+            }
+        }
+
+        /* --------------------------------------------------
+           UI Status helper
+        -------------------------------------------------- */
+        function updateStatus() {
+            const s = document.getElementById('status');
+            const turn = chess.turn() === 'b' ? 'Black' : 'White';
+            s.textContent = chess.in_checkmate() ? `Game over – ${turn} is checkmated.`
+                : chess.in_stalemate() || chess.in_draw() ? 'Game over – draw.'
+                    : `${turn} to move${chess.in_check() ? `, ${turn} in check!` : ''}`;
+        }
+    </script>
+</body>
+
+</html>
